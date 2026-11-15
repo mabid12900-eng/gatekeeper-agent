@@ -63,6 +63,58 @@ npm start       # starts the server (reads .env locally; PORT default 3000)
 
 Then check `http://localhost:3000/health` in a browser -> should print `ok`.
 
+## GO LIVE checklist (start to finish)
+
+**1. Push to GitHub** (in `F:\Agent\gatekeeper-agent`, PowerShell):
+
+```powershell
+git status                  # should be empty/clean
+git add .
+git commit -m "Proof Gatekeeper agent - live ready"
+git remote add origin https://github.com/YOUR-USERNAME/gatekeeper-agent.git
+git branch -M main
+git push -u origin main
+```
+
+Before pushing, confirm: `git ls-files` shows NO `.env`, no `node_modules`, no `dist`;
+`.gitignore` covers `.env` and `node_modules`; no secret was ever pasted into a file.
+
+**2. Create the Render service** (dashboard -> New -> Web Service):
+- Connect your GitHub repo `gatekeeper-agent`.
+- Runtime: **Node**. Build command: `npm install && npm run build`.
+  Start command: `npm start`.
+- Advanced -> Health Check Path: **`/health`**.
+- Environment variable NAMES to add (values come from you, never the repo):
+  `AGENT_GAMES_HMAC_SECRET`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`,
+  `KURIER_API_KEY`, `KURIER_API_URL` (`https://api.kurier.xyz/api/v1`),
+  `TASK_ID_ENCODING` (`keccak`), `NODE_ENV` (`production`).
+- Create Web Service. First deploy takes a few minutes.
+
+**3. Connect the platform (Rotate Secret):**
+1. Copy your service URL, e.g. `https://gatekeeper-agent-xxxx.onrender.com`.
+2. On the Agent Games dashboard register the endpoint as the FULL path:
+   `https://gatekeeper-agent-xxxx.onrender.com/agent` (not just the root).
+3. Dashboard -> **Rotate Secret** -> copy the one-time plaintext -> Render ->
+   your service -> Environment -> set `AGENT_GAMES_HMAC_SECRET` -> Save
+   (Render restarts the service) -> wait 1-2 minutes.
+4. Run **preflight** on the dashboard. Then run **practice mode** tasks before
+   any scored round.
+
+**4. Read the Render logs - lines that mean success:**
+
+| Log line | Meaning |
+|---|---|
+| `CONFIG ERROR: ...` | a required variable is missing/placeholder - fix in Environment, save |
+| `{"event":"server.started",...,"redisConfigured":true,...,"configuredOk":true}` | boot OK, Redis + HMAC + Kurier all set |
+| `{"event":"prover.warmup_ok","proveMs":...}` | proving engine warmed up (~1.5 s) |
+| `{"event":"preflight.received",...}` | the platform preflight arrived and was answered |
+| `{"event":"task.answered",...,"decision":"APPROVE"...}` | a task was decided, with `storeMs/checksMs/proveMs/kurierMs/totalMs` |
+
+**5. Keep it awake - two free monitors pinging `/health` every 5 minutes:**
+- **UptimeRobot**: Add New Monitor -> HTTP(s) -> URL
+  `https://YOUR-SERVICE.onrender.com/health` -> Interval 5 minutes.
+- **cron-job.org**: Create cronjob -> same URL -> "Every 5 minutes" -> enabled.
+
 ## Environment variables (set on Render, or in .env locally)
 
 | Name | Meaning |
