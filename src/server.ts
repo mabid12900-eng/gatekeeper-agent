@@ -93,16 +93,36 @@ export function createApp(depsOverride?: {
   });
 
   app.post('/agent', (req, res) => {
-    handleAgent(req, res, { keys, gatekeeper, ready }).catch((e) => {
+    handleAgent(req, res, { config, keys, gatekeeper, ready }).catch((e) => {
       log('http.error', { error: e instanceof Error ? e.message : String(e) });
       if (!res.headersSent) res.status(500).type('application/json').send('{"error":"internal"}');
     });
   });
 
+  // Body-size / parse errors (e.g. request larger than the 256kb limit) are
+  // rejected by express BEFORE the /agent handler runs; this middleware turns
+  // them into plain JSON so the platform never sees an HTML error page.
+  app.use(
+    (
+      err: { type?: string; statusCode?: number; status?: number },
+      _req: express.Request,
+      res: express.Response,
+      _next: express.NextFunction,
+    ) => {
+      if (err?.type === 'entity.too.large' || err?.statusCode === 413 || err?.status === 413) {
+        res.status(413).type('application/json').send('{"error":"body too large"}');
+        return;
+      }
+      log('http.bad_request', { error: String((err as Error)?.message ?? 'unknown') });
+      res.status(400).type('application/json').send('{"error":"bad request"}');
+    },
+  );
+
   return { app, config, prover, store, beginWarmUp, ready };
 }
 
 interface AgentDeps {
+  config: Config;
   keys: Buffer[];
   gatekeeper: Gatekeeper;
   ready: { value: boolean };
@@ -116,6 +136,15 @@ async function handleAgent(
   const received = Date.now();
   const rawBody = req.body as Buffer;
 
+  // 0. Production configuration gate: if required configuration is missing
+  // (see the CONFIG ERROR lines in the startup logs), every /agent request
+  // fails closed with a plain 503. /health stays up for monitoring.
+  if (deps.config.problems.length > 0) {
+    log('http.not_configured', { problemCount: deps.config.problems.length });
+    res.status(503).type('application/json').send('{"error":"service not configured - see startup logs"}');
+    return;
+  }
+
   // 1. HMAC over the RAW body, BEFORE any parsing.
   const key = verify(deps.keys, rawBody, req.header(SIGNATURE_HEADER));
   if (key === null) {
@@ -124,14 +153,7 @@ async function handleAgent(
     return;
   }
 
-  // 2. Boot gate: signed, fail-closed REJECT while warm-up is still running.
-  if (!deps.ready.value) {
-    log('http.rejected_while_warming_up');
-    sendSigned(res, 200, JSON.stringify({ decision: 'REJECT', reason_code: 'WARMING_UP' }), key);
-    return;
-  }
-
-  // 3. Parse only after the signature checks out.
+  // 2. Parse only after the signature checks out.
   let envelope: Record<string, unknown>;
   try {
     envelope = JSON.parse(rawBody.toString('utf8'));
@@ -141,7 +163,9 @@ async function handleAgent(
     return;
   }
 
-  // 4. Preflight handshake.
+  // 3. Preflight handshake. Answered even during boot warm-up: it is a
+  // static signed reply and touches no prover, store, or Kurier - so a fast
+  // platform preflight right after a deploy cannot fail spuriously.
   if (envelope.type === 'agent-games.preflight.v1') {
     log('preflight.received', {
       agentId: typeof envelope.agent_id === 'string' ? envelope.agent_id : null,
@@ -149,6 +173,14 @@ async function handleAgent(
     });
     const body = JSON.stringify({ ok: true, protocolVersion: 'v1' });
     sendSigned(res, 200, body, key);
+    return;
+  }
+
+  // 4. Boot gate for real tasks: signed, fail-closed REJECT while the prover
+  // warm-up is still running (instead of racing a cold prover or crashing).
+  if (!deps.ready.value) {
+    log('http.rejected_while_warming_up');
+    sendSigned(res, 200, JSON.stringify({ decision: 'REJECT', reason_code: 'WARMING_UP' }), key);
     return;
   }
 
@@ -178,11 +210,22 @@ function main(): void {
   // Bind 0.0.0.0 explicitly: Render's router expects the service on all
   // interfaces of the container, on the PORT it provides.
   server.listen(config.port, '0.0.0.0', () => {
+    // Hostname only: the full URL is never logged (the API key travels in the
+    // request path and must never appear in logs).
+    let kurierHost: string | null = null;
+    try {
+      kurierHost = new URL(config.kurierApiUrl).host;
+    } catch {
+      kurierHost = 'invalid-url';
+    }
     log('server.started', {
       node: process.version,
       redisConfigured: config.upstashRestUrl !== null && config.upstashRestToken !== null,
       hmacSecretPresent: config.hmacSecret !== null,
       kurierConfigured: config.kurierApiKey !== null,
+      kurierHost,
+      configuredOk: config.problems.length === 0,
+      problemCount: config.problems.length,
       production: config.isProduction,
       taskIdEncoding: config.taskIdEncoding,
       port: config.port,

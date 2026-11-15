@@ -12,6 +12,14 @@ import fs from 'node:fs';
  * 0x6b79c601... hash. The API key is never printed.
  */
 async function main(): Promise<void> {
+  // Production guard: this helper is ONLY for optional testnet rehearsals.
+  // For the competition you do NOT need it - the platform has already
+  // registered the gatekeeper verification key on zkVerify mainnet, and the
+  // agent submits proofs with that official vk hash (vkRegistered: true).
+  if (process.env.NODE_ENV === 'production') {
+    console.log('REFUSING to run: register-vk is a testnet-only helper and NODE_ENV is production. Nothing was changed.');
+    process.exit(1);
+  }
   const apiKey = process.env.KURIER_API_KEY;
   const apiUrl = process.env.KURIER_API_URL || 'https://api-testnet.kurier.xyz/api/v1';
   if (!apiKey) {
