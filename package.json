@@ -1,0 +1,28 @@
+{
+  "name": "gatekeeper-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "zkVerify Agent Games - Proof Gatekeeper agent: signed APPROVE/REJECT decisions with Groth16 proofs (snarkjs) verified via Kurier/zkVerify",
+  "main": "dist/src/server.js",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/server.js",
+    "test": "npm run build && node dist/test/local-test.js",
+    "register-vk": "node dist/scripts/register-vk.js"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "snarkjs": "^0.7.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.17.0",
+    "typescript": "^5.8.3"
+  }
+}

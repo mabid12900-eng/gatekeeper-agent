@@ -1,0 +1,13 @@
+# Secrets - never commit the real ones
+.env
+
+# Build output (created by npm run build)
+dist/
+
+# Installed packages (created by npm install)
+node_modules/
+
+# Logs and OS noise
+*.log
+.DS_Store
+Thumbs.db
