@@ -15,8 +15,33 @@ export interface KurierResult {
  * Poll until status "Finalized" ("Failed" is final too).
  *
  * SECURITY: the API key is part of the URL path. We therefore never log the
- * URL - only job ids and statuses.
+ * URL - only job ids and statuses. Every error text is scrubbed with
+ * `scrubKurierSecrets` before it reaches a log line, because Node's fetch
+ * errors (e.g. "Failed to parse URL from ...") can embed the FULL URL,
+ * key included.
  */
+
+/**
+ * Removes the Kurier API key and the full API URL from any text destined for
+ * logs. Order matters: the key first (it sits inside the URL), then the URL.
+ * Returns the text unchanged only if neither appears in it.
+ */
+export function scrubKurierSecrets(text: string, apiKey: string | null, apiUrl: string): string {
+  let scrubbed = text;
+  if (apiKey !== null && apiKey !== '') {
+    scrubbed = scrubbed.split(apiKey).join('<kurier-key>');
+  }
+  if (apiUrl !== '') {
+    scrubbed = scrubbed.split(apiUrl).join('<kurier-url>');
+  }
+  return scrubbed;
+}
+
+/** Scrubs an unknown error/exception value down to safe log text. */
+export function scrubKurierError(e: unknown, apiKey: string | null, apiUrl: string): string {
+  return scrubKurierSecrets(e instanceof Error ? e.message : String(e), apiKey, apiUrl);
+}
+
 export class Kurier {
   constructor(private readonly config: Config) {}
 
@@ -61,7 +86,10 @@ export class Kurier {
         return { ok: false, status: `HTTP_${submitRes.status}`, txHash: null, ms: Date.now() - t0 };
       }
       if (submitBody.optimisticVerify !== 'success') {
-        log('kurier.optimistic_not_success', { jobId });
+        log('kurier.optimistic_not_success', {
+          jobId,
+          optimisticVerify: scrubKurierSecrets(String(submitBody.optimisticVerify), apiKey, this.config.kurierApiUrl),
+        });
         return {
           ok: false,
           status: `OPTIMISTIC_${String(submitBody.optimisticVerify)}`,
@@ -83,7 +111,10 @@ export class Kurier {
         );
         const statusBody = (await statusRes.json()) as Record<string, unknown>;
         const status = typeof statusBody.status === 'string' ? statusBody.status : 'UNKNOWN';
-        log('kurier.status', { jobId, status });
+        log('kurier.status', {
+          jobId,
+          status: scrubKurierSecrets(status, apiKey, this.config.kurierApiUrl),
+        });
         if (status === 'Finalized') {
           return {
             ok: true,
@@ -99,7 +130,7 @@ export class Kurier {
         await sleep(Math.max(0, Math.min(this.config.kurierPollMs, remaining)));
       }
     } catch (e) {
-      log('kurier.error', { jobId, error: e instanceof Error ? e.message : String(e) });
+      log('kurier.error', { jobId, error: scrubKurierError(e, apiKey, this.config.kurierApiUrl) });
       return { ok: false, status: 'ERROR', txHash: null, ms: Date.now() - t0 };
     }
   }

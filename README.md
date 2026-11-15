@@ -50,14 +50,14 @@ gatekeeper-agent/
 └── test/
     ├── envelopes.ts           sample envelopes + signing helper
     ├── fake-redis.ts          offline fake of the Upstash REST API
-    └── local-test.ts          replays 17 cases, prints PASS/FAIL
+    └── local-test.ts          replays 20 cases, prints PASS/FAIL
 ```
 
 ## Commands
 
 ```bash
 npm install     # one time, downloads packages
-npm test        # builds and runs the 17 local tests -> expect 17/17 passed
+npm test        # builds and runs the 20 local tests -> expect 20/20 passed
 npm start       # starts the server (reads .env locally; PORT default 3000)
 ```
 

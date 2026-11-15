@@ -27,19 +27,27 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const vk = JSON.parse(fs.readFileSync('circuits/gatekeeper_vk.json', 'utf8'));
-  const res = await fetch(`${apiUrl}/register-vk/${apiKey}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      proofType: 'groth16',
-      proofOptions: { library: 'snarkjs', curve: 'bn128' },
-      vk,
-    }),
-    signal: AbortSignal.timeout(60000),
-  });
-  const body = (await res.json()) as { vkHash?: string; meta?: { vkHash?: string } };
-  console.log('http status:', res.status);
-  console.log('vkHash:', JSON.stringify(body.vkHash ?? body.meta?.vkHash ?? body));
+  try {
+    const res = await fetch(`${apiUrl}/register-vk/${apiKey}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        proofType: 'groth16',
+        proofOptions: { library: 'snarkjs', curve: 'bn128' },
+        vk,
+      }),
+      signal: AbortSignal.timeout(60000),
+    });
+    const body = (await res.json()) as { vkHash?: string; meta?: { vkHash?: string } };
+    console.log('http status:', res.status);
+    console.log('vkHash:', JSON.stringify(body.vkHash ?? body.meta?.vkHash ?? body));
+  } catch (e) {
+    // The API key travels in the URL path - scrub it (and the URL) out of any
+    // fetch error text before it reaches the console.
+    const { scrubKurierError } = await import('../src/kurier.js');
+    console.log('register-vk failed:', scrubKurierError(e, apiKey, apiUrl));
+    process.exit(1);
+  }
 }
 
 void main();

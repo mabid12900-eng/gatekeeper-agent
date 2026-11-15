@@ -10,12 +10,15 @@
  *            NOT reuse, different-task reuse, concurrent claim (3)
  *   Part C - Redis down/slow: fail closed with STORE_UNAVAILABLE (1)
  *   Part D - task during boot warm-up: signed REJECT, /health instant (1)
+ *   Part E - Kurier API key (URL path) never appears in any log or error (3)
  *
  * Run:  npm test
  */
 import http from 'node:http';
 import { createHmac } from 'node:crypto';
 import { sign } from '../src/hmac.js';
+import { Kurier, KurierResult, scrubKurierSecrets } from '../src/kurier.js';
+import { loadConfig } from '../src/config.js';
 import {
   TEST_SECRET,
   validEnvelope,
@@ -369,6 +372,83 @@ async function main(): Promise<void> {
     record('task before warm-up finishes -> signed REJECT WARMING_UP, /health still "ok"', okShape && sigOk && healthOk, reply.text);
   }
   await d.close();
+
+  // =========================================================================
+  // PART E - the Kurier API key travels in the URL path. NO log line, error
+  // message, or exception text may ever contain it (or the full URL).
+  // =========================================================================
+  {
+    const LEAK_KEY = 'TEST_KURIER_KEY_DO_NOT_LEAK_9f2a';
+    const LEAK_URL = 'not-a-valid-url'; // makes fetch throw with the URL in its message
+
+    // E16. The scrub helper itself (unit).
+    const dirty = `Failed to parse URL from ${LEAK_URL}/submit-proof/${LEAK_KEY}`;
+    const clean = scrubKurierSecrets(dirty, LEAK_KEY, LEAK_URL);
+    record(
+      'scrub helper removes the Kurier key and URL from error text',
+      clean === 'Failed to parse URL from <kurier-url>/submit-proof/<kurier-key>' && !clean.includes(LEAK_KEY),
+      clean,
+    );
+
+    // Capture every console.log line the Kurier client emits.
+    const originalLog = console.log;
+    const lines: string[] = [];
+    console.log = (...args: unknown[]): void => {
+      lines.push(args.map((a) => String(a)).join(' '));
+    };
+
+    const kurierConfig = loadConfig();
+    kurierConfig.kurierApiKey = LEAK_KEY;
+
+    // E17. Malformed URL: Node's fetch error embeds the FULL URL (key included)
+    // in its message ("Failed to parse URL from ...") - the log must be scrubbed.
+    kurierConfig.kurierApiUrl = LEAK_URL;
+    let r17: KurierResult | null = null;
+    try {
+      r17 = await new Kurier(kurierConfig).submitAndWait({}, [], 30000);
+    } finally {
+      console.log = originalLog;
+    }
+    const e17ok =
+      r17 !== null &&
+      r17.ok === false &&
+      r17.status === 'ERROR' &&
+      !lines.some((l) => l.includes(LEAK_KEY) || l.includes(LEAK_URL));
+    record(
+      'Kurier fetch error (message embeds URL+key) -> logged text scrubbed, no key/URL anywhere',
+      e17ok,
+      lines.filter((l) => l.includes(LEAK_KEY) || l.includes(LEAK_URL)).join(' | ') || `result=${JSON.stringify(r17)}`,
+    );
+
+    // E18. Real HTTP failure: 500 with a hostile non-JSON body. res.json()
+    // throws with the response BODY in its message; the result must fail
+    // closed and no log line may carry the key or the URL.
+    lines.length = 0;
+    const badServer = http.createServer((_req, res) => {
+      res.writeHead(500, { 'content-type': 'text/html' });
+      res.end('<html>boom</html>');
+    });
+    await new Promise<void>((resolve) => badServer.listen(0, '127.0.0.1', resolve));
+    const badAddress = badServer.address();
+    if (badAddress === null || typeof badAddress === 'string') throw new Error('no port');
+    kurierConfig.kurierApiUrl = `http://127.0.0.1:${badAddress.port}`;
+    let r18: KurierResult | null = null;
+    try {
+      r18 = await new Kurier(kurierConfig).submitAndWait({}, [], 30000);
+    } finally {
+      console.log = originalLog;
+    }
+    const e18ok =
+      r18 !== null &&
+      r18.ok === false &&
+      !lines.some((l) => l.includes(LEAK_KEY) || l.includes(kurierConfig.kurierApiUrl));
+    record(
+      'Kurier HTTP 500 / hostile body -> fails closed, logs scrubbed, no key/URL anywhere',
+      e18ok,
+      lines.filter((l) => l.includes(LEAK_KEY) || l.includes(kurierConfig.kurierApiUrl)).join(' | ') || `result=${JSON.stringify(r18)}`,
+    );
+    badServer.close();
+  }
 
   const failed = results.filter((r) => !r.pass).length;
   console.log(`\n${results.length - failed}/${results.length} passed${failed === 0 ? '' : `, ${failed} FAILED`}`);
